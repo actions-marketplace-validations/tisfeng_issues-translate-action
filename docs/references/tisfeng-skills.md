@@ -1,10 +1,10 @@
 # `tisfeng/skills` 来源参考
 
-- 核对日期：2026-09-20。
+- 核对日期：2026-09-27。
 - 来源：`https://github.com/tisfeng/skills`。
-- 采用版本：`v0.6.2`。
-- annotated tag object：`b30ebbc0599fbf29bb563052b119de5967bd10a8`。
-- peeled commit：`ee30f149f523a76b14df55884fe149a549798d2f`。
+- 采用版本：`v0.7.0`。
+- annotated tag object：`26b7fdf9b684c6fa821c71ed050e3d186e7b1622`。
+- peeled commit：`83788402d3ab36fa7f6900b978dc3bb288d26f28`。
 - Tag 签名状态：annotated、unsigned；核验时同时固定 tag 和 peeled commit。
 - Skills 安装器：`skills@1.5.25`。
 
@@ -20,9 +20,10 @@
 `git-commit` 的本地化正文标记和全局 `References:` 尾段契约。
 
 `v0.6.1` 让 `review-pr` 在当前 GitHub 用户是 PR 作者、同名本地分支可以安全 fast-forward 且
-upstream 仓库与分支等价时复用该分支；`v0.6.2` 延续该分支交接修复并保留其测试覆盖；其他不安全
-或身份不明场景仍走 collision fallback。`worktree-rebase-merge` 同时移除 UI 展示名称中的斜杠；
-其余四个受管 Skill 内容不变。
+upstream 仓库与分支等价时复用该分支；`v0.6.2` 延续该分支交接修复；`v0.7.0` 进一步保留本人
+PR 分支上的本地领先提交，并以冻结的远端 Git 对象区分 checkout 与 review SHA，同时记录准备依赖
+指纹和改进审查报告结构。`worktree-rebase-merge` 同时移除 UI 展示名称中的斜杠；其余受管 Skill
+内容保持不变。
 
 ## 已核验安装形式
 
@@ -31,7 +32,7 @@ upstream 仓库与分支等价时复用该分支；`v0.6.2` 延续该分支交�
 
 ```bash
 npx -y skills@1.5.25 add \
-  https://github.com/tisfeng/skills/tree/v0.6.2 \
+  https://github.com/tisfeng/skills/tree/v0.7.0 \
   --skill code-simplifier git-commit review review-pr submit-pr worktree-rebase-merge \
   --agent codex --yes --copy --full-depth
 ```
