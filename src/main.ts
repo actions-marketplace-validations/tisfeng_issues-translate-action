@@ -1,19 +1,34 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import translate from '@tomsun28/google-translate-api'
+import translate, {getCode} from 'google-translate-api-x'
 import franc from 'franc-min'
+import langs from 'langs'
+import {
+  getCjkLanguageOverride,
+  getLanguageDetectionText
+} from './language-detection'
+
+export {getLanguageDetectionText} from './language-detection'
 
 const ISSUE_COMMENT_EVENT = 'issue_comment'
 const ISSUES_EVENT = 'issues'
 const REVIEW_COMMENT_EVENT = 'pull_request_review_comment'
 const COMMENT_TITLE_SEPARATOR = '@@===='
-const SINGLE_PART_TRANSLATION = 1
 const DUAL_PART_TRANSLATION = 2
-const DEFAULT_BOT_NOTE =
-  "Bot detected the issue body's language is not English, translate it automatically. 👯👭🏻🧑‍🤝‍🧑👫🧑🏿‍🤝‍🧑🏻👩🏾‍🤝‍👨🏿👬🏿"
+const DEFAULT_PRIMARY_LANGUAGE = 'en'
+const DEFAULT_BOT_NOTE = 'Bot automatically translated this content.'
 const DEFAULT_BOT_TOKEN_BASE64 =
   'Y2I4M2EyNjE0NThlMzIwMjA3MGJhODRlY2I5NTM0ZjBmYTEwM2ZlNg=='
 const DEFAULT_BOT_LOGIN_NAME = 'Issues-translate-bot'
+const CODEX_MENTION_PATTERN = /(^|[^A-Za-z0-9_-])@(codex)(?![A-Za-z0-9_-])/giu
+const LINE_ENDING_PATTERN = /\r\n?/gu
+const LANGUAGE_DETECTION_ALIASES: Record<string, string[]> = {
+  ja: ['jpn'],
+  ko: ['kor'],
+  zh: ['cmn', 'zho'],
+  'zh-cn': ['cmn', 'zho'],
+  'zh-tw': ['cmn', 'zho']
+}
 
 type Octokit = ReturnType<typeof github.getOctokit>
 
@@ -62,6 +77,16 @@ interface TranslationContext {
   originComment: string | null
   originTitle: string | null
   commentTarget: CommentTarget
+}
+
+export interface NormalizedLanguage {
+  translateCode: string
+  detectionCodes: string[]
+}
+
+export interface LanguageConfig {
+  primary: NormalizedLanguage
+  secondary: NormalizedLanguage | null
 }
 
 export function shouldHandleEvent(
@@ -168,6 +193,13 @@ ${translateComment ?? ''}
       `
 }
 
+export function neutralizeCodexMentions(body: string): string {
+  return body.replace(
+    CODEX_MENTION_PATTERN,
+    (_match, prefix: string, mention: string) => `${prefix}@\u200B${mention}`
+  )
+}
+
 export function isInputEnabled(input: string): boolean {
   const normalizedInput = input.trim().toLowerCase()
   return (
@@ -177,7 +209,7 @@ export function isInputEnabled(input: string): boolean {
   )
 }
 
-async function run(): Promise<void> {
+export async function run(): Promise<void> {
   try {
     if (
       !shouldHandleEvent(
@@ -207,42 +239,11 @@ async function run(): Promise<void> {
       commentTarget
     } = translationContext
 
-    let botNote = DEFAULT_BOT_NOTE
-    const isModifyTitle = isInputEnabled(core.getInput('IS_MODIFY_TITLE'))
-    let translateOrigin: string
-    let needCommitComment = originComment !== null && originComment !== 'null'
-    let needCommitTitle = originTitle !== null && originTitle !== 'null'
-
-    if (originComment !== null && isEnglishText(originComment)) {
-      needCommitComment = false
-      core.info('Detect the issue comment body is english already, ignore.')
-    }
-    if (originTitle !== null && isEnglishText(originTitle)) {
-      needCommitTitle = false
-      core.info('Detect the issue title body is english already, ignore.')
-    }
-    if (!needCommitTitle && !needCommitComment) {
-      core.info('Detect the issue do not need translated, return.')
-      return
-    }
-    if (needCommitComment && needCommitTitle) {
-      translateOrigin = `${originComment}${COMMENT_TITLE_SEPARATOR}${originTitle}`
-    } else if (needCommitComment) {
-      translateOrigin = originComment ?? ''
-    } else {
-      translateOrigin = `null${COMMENT_TITLE_SEPARATOR}${originTitle}`
-    }
-
     let botToken = core.getInput('BOT_GITHUB_TOKEN')
     let botLoginName = core.getInput('BOT_LOGIN_NAME')
     if (botToken === '') {
       botToken = Buffer.from(DEFAULT_BOT_TOKEN_BASE64, 'base64').toString()
       botLoginName = DEFAULT_BOT_LOGIN_NAME
-    }
-
-    const customBotMessage = core.getInput('CUSTOM_BOT_NOTE').trim()
-    if (customBotMessage !== '') {
-      botNote = customBotMessage
     }
 
     let octokit: Octokit | null = null
@@ -251,48 +252,117 @@ async function run(): Promise<void> {
       const botInfo = await octokit.request('GET /user')
       botLoginName = botInfo.data.login
     }
-    if (botLoginName === issueUser) {
+    if (botLoginName.toLowerCase() === issueUser.toLowerCase()) {
       core.info(
         `The comment user is bot ${botLoginName} himself, ignore return.`
       )
       return
     }
 
-    core.info(`translate origin body is: ${translateOrigin}`)
+    let botNote = DEFAULT_BOT_NOTE
+    const isModifyTitle = isInputEnabled(core.getInput('IS_MODIFY_TITLE'))
+    const languageConfig = getLanguageConfig(
+      core.getInput('PRIMARY_LANGUAGE'),
+      core.getInput('SECONDARY_LANGUAGE')
+    )
+    const commentTargetLanguage = getTranslationTarget(
+      originComment,
+      languageConfig
+    )
+    const titleTargetLanguage = getTranslationTarget(
+      originTitle,
+      languageConfig
+    )
+    let needCommitComment = commentTargetLanguage !== null
+    let needCommitTitle = titleTargetLanguage !== null
 
-    const translateTmp = await translateIssueOrigin(translateOrigin)
-    if (
-      translateTmp === null ||
-      translateTmp === '' ||
-      translateTmp === translateOrigin
-    ) {
-      core.warning('The translateBody is null or same, ignore return.')
+    if (!needCommitTitle && !needCommitComment) {
+      core.info('Detect the issue do not need translated, return.')
       return
     }
 
-    const translateBody = translateTmp.split(COMMENT_TITLE_SEPARATOR)
+    const customBotMessage = core.getInput('CUSTOM_BOT_NOTE').trim()
+    if (customBotMessage !== '') {
+      botNote = customBotMessage
+    }
+
     let translateComment: string | null = null
     let translateTitle: string | null = null
 
-    core.info(`translate body is: ${translateTmp}`)
+    if (
+      needCommitComment &&
+      needCommitTitle &&
+      commentTargetLanguage !== null &&
+      commentTargetLanguage === titleTargetLanguage
+    ) {
+      const translateOrigin = `${originComment}${COMMENT_TITLE_SEPARATOR}${originTitle}`
+      const translateTmp = await translateIssueOrigin(
+        translateOrigin,
+        commentTargetLanguage
+      )
+      if (translateTmp === '') {
+        core.warning(
+          'The translated content is empty or unchanged, ignore return.'
+        )
+        return
+      }
+      const translateBody = translateTmp.split(COMMENT_TITLE_SEPARATOR)
 
-    if (translateBody.length === SINGLE_PART_TRANSLATION) {
-      translateComment = translateBody[0].trim()
-      if (translateComment === originComment) {
-        needCommitComment = false
+      if (translateBody.length !== DUAL_PART_TRANSLATION) {
+        core.setFailed(
+          `Translation failed: unexpected number of parts in translated body. Expected 2 parts, got ${translateBody.length}.`
+        )
+        return
       }
-    } else if (translateBody.length === DUAL_PART_TRANSLATION) {
-      translateComment = translateBody[0].trim()
-      translateTitle = translateBody[1].trim()
-      if (translateComment === originComment) {
-        needCommitComment = false
-      }
-      if (translateTitle === originTitle) {
-        needCommitTitle = false
-      }
+
+      translateComment = hasMeaningfulTranslation(
+        originComment ?? '',
+        translateBody[0]
+      )
+        ? translateBody[0].trim()
+        : ''
+      translateTitle = hasMeaningfulTranslation(
+        originTitle ?? '',
+        translateBody[1]
+      )
+        ? translateBody[1].trim()
+        : ''
     } else {
+      if (needCommitComment && commentTargetLanguage !== null) {
+        translateComment = await translateIssueOrigin(
+          originComment ?? '',
+          commentTargetLanguage
+        )
+      }
+      if (needCommitTitle && titleTargetLanguage !== null) {
+        translateTitle = await translateIssueOrigin(
+          originTitle ?? '',
+          titleTargetLanguage
+        )
+      }
+    }
+
+    if (translateComment === '' || translateComment === originComment) {
+      needCommitComment = false
+      translateComment = null
+    }
+    if (translateTitle === '' || translateTitle === originTitle) {
+      needCommitTitle = false
+      translateTitle = null
+    }
+    if (!needCommitTitle && !needCommitComment) {
+      core.warning(
+        'The translated content is empty or unchanged, ignore return.'
+      )
+      return
+    }
+
+    if (
+      (needCommitComment && translateComment === null) ||
+      (needCommitTitle && translateTitle === null)
+    ) {
       core.setFailed(
-        `Translation failed: unexpected number of parts in translated body. Expected 1 or 2 parts, got ${translateBody.length}. Body: ${translateTmp}`
+        'Translation failed: a translated part is missing after target language selection.'
       )
       return
     }
@@ -310,50 +380,185 @@ async function run(): Promise<void> {
       botNote
     )
 
+    const safeTranslateCommentBody =
+      translateCommentBody === null
+        ? null
+        : neutralizeCodexMentions(translateCommentBody)
+
     if (isModifyTitle && translateTitle !== null && needCommitTitle) {
       await modifyTitle(issueNumber, translateTitle, octokit)
     }
 
-    if (translateCommentBody !== null) {
-      await createComment(commentTarget, translateCommentBody, octokit)
+    if (safeTranslateCommentBody !== null) {
+      await createComment(commentTarget, safeTranslateCommentBody, octokit)
     }
 
     core.setOutput('complete time', new Date().toTimeString())
   } catch (error: unknown) {
-    core.setFailed(error instanceof Error ? error.message : String(error))
+    core.setFailed(formatTranslationError(error))
   }
+}
+
+export function getLanguageConfig(
+  primaryInput: string,
+  secondaryInput: string
+): LanguageConfig {
+  const primary = normalizeLanguage(
+    primaryInput.trim() || DEFAULT_PRIMARY_LANGUAGE,
+    'PRIMARY_LANGUAGE'
+  )
+  const secondaryValue = secondaryInput.trim()
+  const secondary =
+    secondaryValue === ''
+      ? null
+      : normalizeLanguage(secondaryValue, 'SECONDARY_LANGUAGE')
+
+  if (
+    secondary !== null &&
+    secondary.translateCode.toLowerCase() ===
+      primary.translateCode.toLowerCase()
+  ) {
+    throw new Error(
+      'SECONDARY_LANGUAGE must be different from PRIMARY_LANGUAGE when it is configured.'
+    )
+  }
+
+  return {primary, secondary}
+}
+
+export function getTranslationTarget(
+  body: string | null,
+  languageConfig: LanguageConfig
+): string | null {
+  if (body === null || body === 'null') {
+    return null
+  }
+
+  const detectedLanguage = getDetectedLanguage(body)
+  if (detectedLanguage === null) {
+    return languageConfig.primary.translateCode
+  }
+
+  if (languageConfig.primary.detectionCodes.includes(detectedLanguage)) {
+    if (languageConfig.secondary === null) {
+      core.info(
+        `Detect the content is already in ${languageConfig.primary.translateCode}, ignore.`
+      )
+      return null
+    }
+
+    return languageConfig.secondary.translateCode
+  }
+
+  return languageConfig.primary.translateCode
 }
 
 export function isEnglishText(body: string | null): boolean {
   if (body === null) {
     return true
   }
-  const detectResult = franc(body)
+
+  return getDetectedLanguage(body) === 'eng'
+}
+
+export function getDetectedLanguage(body: string): string | null {
+  const languageDetectionText = getLanguageDetectionText(body)
+  const cjkLanguageOverride = getCjkLanguageOverride(languageDetectionText)
+  if (cjkLanguageOverride !== null) {
+    core.info(
+      `Detect comment body language from Unicode script result is: ${cjkLanguageOverride}`
+    )
+    return cjkLanguageOverride
+  }
+
+  const detectResult = franc(languageDetectionText)
   if (
     detectResult === 'und' ||
     detectResult === undefined ||
     detectResult === null
   ) {
     core.warning(`Can not detect the undetermined comment body: ${body}`)
-    return false
+    return null
   }
   core.info(`Detect comment body language result is: ${detectResult}`)
-  return detectResult === 'eng'
+  return detectResult
 }
 
-async function translateIssueOrigin(body: string): Promise<string> {
-  let result = ''
-  try {
-    const response = await translate(body, {to: 'en'})
-    if (response.text !== body) {
-      result = response.text
-    }
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : String(error)
-    core.error(errorMessage)
-    core.setFailed(errorMessage)
+export function formatTranslationError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  const errorName = error instanceof Error ? error.name : undefined
+  const cause =
+    error instanceof Error
+      ? (error as Error & {cause?: unknown}).cause
+      : undefined
+  const response =
+    typeof cause === 'object' && cause !== null
+      ? (cause as {response?: {status?: unknown}}).response
+      : undefined
+  const status = response?.status
+  const statusMessage = typeof status === 'number' ? `status=${status}` : ''
+  const nameMessage = errorName && errorName !== 'Error' ? `${errorName}: ` : ''
+
+  return [statusMessage, `${nameMessage}${message}`].filter(Boolean).join(': ')
+}
+
+export async function translateIssueOrigin(
+  body: string,
+  targetLanguage = DEFAULT_PRIMARY_LANGUAGE
+): Promise<string> {
+  const response = await translate(body, {
+    to: targetLanguage,
+    forceBatch: true,
+    rejectOnPartialFail: true
+  })
+
+  return hasMeaningfulTranslation(body, response.text) ? response.text : ''
+}
+
+function hasMeaningfulTranslation(
+  original: string,
+  translated: string
+): boolean {
+  return (
+    normalizeForTranslationComparison(original) !==
+    normalizeForTranslationComparison(translated)
+  )
+}
+
+function normalizeForTranslationComparison(text: string): string {
+  return text.normalize('NFC').replace(LINE_ENDING_PATTERN, '\n')
+}
+
+function normalizeLanguage(
+  input: string,
+  inputName: 'PRIMARY_LANGUAGE' | 'SECONDARY_LANGUAGE'
+): NormalizedLanguage {
+  if (input.toLowerCase() === 'auto') {
+    throw new Error(`${inputName} cannot be auto.`)
   }
-  return result
+
+  const translateCode = getCode(input)
+  if (translateCode === null) {
+    throw new Error(
+      `${inputName} is not a supported Google Translate language.`
+    )
+  }
+
+  const languageCode = translateCode.split('-')[0].toLowerCase()
+  const language =
+    langs.where('1', languageCode) ?? langs.where('3', languageCode)
+
+  const aliases = [
+    ...(LANGUAGE_DETECTION_ALIASES[translateCode.toLowerCase()] ?? []),
+    ...(LANGUAGE_DETECTION_ALIASES[languageCode] ?? [])
+  ]
+
+  return {
+    translateCode,
+    detectionCodes: Array.from(
+      new Set([language?.['3'] ?? languageCode, ...aliases])
+    )
+  }
 }
 
 async function createComment(
