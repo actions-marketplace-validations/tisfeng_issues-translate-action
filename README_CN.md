@@ -67,6 +67,14 @@ CUSTOM_BOT_NOTE: Bot automatically translated this content.
 `IS_MODIFY_TITLE` 只决定 `issues(opened)` 事件中翻译后的标题是否直接覆盖原标题；
 它不决定标题或评论是否需要翻译。
 
+### 按 ID 翻译行内评论
+
+同时传入 `REVIEW_COMMENT_ID` 和 `REVIEW_PULL_NUMBER`，即可翻译当前仓库中的行内评论。
+Action 从 GitHub 读取原评论并在原线程回复。重新运行时，如果机器人已为该 ID 回复译文，则跳过。
+
+对于 fork PR，可由只读 workflow 收集 ID，再由默认分支上的 `workflow_run` job
+以 `pull-requests: write` 权限调用此入口。两个 workflow 之间只传 ID，发布 job 从 GitHub 读取评论。
+
 ### 译文中的 Codex mention
 
 为防止翻译机器人评论意外调用 Codex，生成评论中的独立 `@codex` 会在 `@` 后插入

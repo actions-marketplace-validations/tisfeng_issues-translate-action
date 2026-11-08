@@ -73,6 +73,18 @@ CUSTOM_BOT_NOTE: Bot automatically translated this content.
 `issues(opened)` event replaces the original title. It does not control whether
 the title or comment is translated.
 
+### Translate a review comment by ID
+
+Pass `REVIEW_COMMENT_ID` and `REVIEW_PULL_NUMBER` together to translate a
+review comment from the current repository. This mode fetches the original
+comment from GitHub and posts the translation in the same thread. Reruns skip
+comments that already have a reply from the translation bot for that ID.
+
+For fork PRs, a read-only workflow can collect the IDs and a separate
+`workflow_run` job on the default branch can pass them to this action with
+`pull-requests: write`. Pass only the IDs across workflows and fetch the
+comment through GitHub in the publishing job.
+
 ### Codex mentions in translated comments
 
 To prevent a translated bot comment from unintentionally invoking Codex, an

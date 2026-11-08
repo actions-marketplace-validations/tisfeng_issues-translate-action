@@ -7,10 +7,12 @@
 
 ## 事件到翻译的流程
 
-1. `run()` 仅接受 `issue_comment(created)`、`issues(opened)` 和
-   `pull_request_review_comment(created)`。
+1. `run()` 接受 `issue_comment(created)`、`issues(opened)` 和
+   `pull_request_review_comment(created)`。显式传入 `REVIEW_COMMENT_ID` 和
+   `REVIEW_PULL_NUMBER` 时，从当前仓库读取评论并核对所属 PR，适用于有写权限的发布 workflow。
+   该入口按原评论 ID 查找机器人已发布的译文，重跑时跳过已翻译的评论。
 2. `getTranslationContext()` 从事件 payload 取得 issue/PR 编号、作者、评论、可选标题和
-   评论目标。review comment 使用原 thread 回复；其他情况创建 issue 评论。
+   评论目标。review comment 使用原线程的顶层评论 ID 回复；其他情况创建 issue 评论。
 3. `getTranslationTarget()` 先调用 `getLanguageDetectionText()` 生成检测副本：保留 Markdown
    可见文字，忽略 URL、代码、链接目标和 commit SHA 等技术噪声。若 Latin 技术词可能压过
    有充分证据的中日韩文字，Unicode script 规则优先返回对应检测代码；Han-only 的中日歧义

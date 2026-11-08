@@ -5,6 +5,12 @@ branding:
   color: 'orange'
 author: 'tisfeng'
 inputs:
+  REVIEW_COMMENT_ID:
+    description: 'Optional ID of a review comment to fetch and translate from this repository.'
+    required: false
+  REVIEW_PULL_NUMBER:
+    description: 'Pull request number required with REVIEW_COMMENT_ID.'
+    required: false
   BOT_GITHUB_TOKEN:
     description: 'Optional custom bot token. Overrides the workflow token. No built-in bot credential is provided.'
     required: false

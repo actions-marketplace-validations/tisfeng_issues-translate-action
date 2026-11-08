@@ -47,6 +47,7 @@ interface GithubComment {
   body: string | null
   user: GithubUser
   html_url?: string
+  in_reply_to_id?: number
 }
 
 interface GithubPullRequest {
@@ -122,18 +123,7 @@ export function getTranslationContext(
   if (context.eventName === REVIEW_COMMENT_EVENT) {
     const pullRequest = payload.pull_request as GithubPullRequest
     const comment = payload.comment as GithubComment
-    return {
-      issueNumber: pullRequest.number,
-      issueUser: comment.user.login,
-      originComment: comment.body,
-      originTitle: null,
-      commentTarget: {
-        kind: 'pull_request_review_comment',
-        pullNumber: pullRequest.number,
-        commentId: comment.id,
-        htmlUrl: comment.html_url ?? pullRequest.html_url
-      }
-    }
+    return reviewTranslationContext(pullRequest, comment)
   }
 
   if (context.eventName === ISSUES_EVENT) {
@@ -152,6 +142,41 @@ export function getTranslationContext(
   }
 
   return null
+}
+
+function reviewTranslationContext(
+  pullRequest: GithubPullRequest,
+  comment: GithubComment
+): TranslationContext {
+  return {
+    issueNumber: pullRequest.number,
+    issueUser: comment.user.login,
+    originComment: comment.body,
+    originTitle: null,
+    commentTarget: {
+      kind: 'pull_request_review_comment',
+      pullNumber: pullRequest.number,
+      commentId: comment.in_reply_to_id ?? comment.id,
+      htmlUrl: comment.html_url ?? pullRequest.html_url
+    }
+  }
+}
+
+async function fetchReviewTranslationContext(
+  pullNumber: number,
+  commentId: number,
+  octokit: Octokit
+): Promise<TranslationContext> {
+  const {owner, repo} = github.context.repo
+  const {data: comment} = await octokit.rest.pulls.getReviewComment({
+    owner,
+    repo,
+    comment_id: commentId
+  })
+  if (!comment.pull_request_url.endsWith(`/pulls/${pullNumber}`)) {
+    throw new Error('The review comment does not belong to REVIEW_PULL_NUMBER.')
+  }
+  return reviewTranslationContext({number: pullNumber}, comment)
 }
 
 export function buildTranslateBody(
@@ -209,7 +234,13 @@ export function isInputEnabled(input: string): boolean {
 
 export async function run(): Promise<void> {
   try {
+    const commentIdInput = core.getInput('REVIEW_COMMENT_ID')
+    const pullNumberInput = core.getInput('REVIEW_PULL_NUMBER')
+    const byCommentId = commentIdInput !== '' || pullNumberInput !== ''
+    const commentId = Number(commentIdInput)
+    const pullNumber = Number(pullNumberInput)
     if (
+      !byCommentId &&
       !shouldHandleEvent(
         github.context.eventName,
         github.context.payload.action
@@ -221,7 +252,26 @@ export async function run(): Promise<void> {
       return
     }
 
-    const translationContext = getTranslationContext(github.context)
+    if (
+      byCommentId &&
+      (![commentIdInput, pullNumberInput].every(input =>
+        /^[1-9][0-9]*$/u.test(input)
+      ) ||
+        !Number.isSafeInteger(commentId) ||
+        !Number.isSafeInteger(pullNumber))
+    ) {
+      throw new Error(
+        'REVIEW_COMMENT_ID and REVIEW_PULL_NUMBER must both be positive integer IDs.'
+      )
+    }
+
+    const {token: botToken, login} = getBotCredentials()
+    let octokit: Octokit | null = byCommentId
+      ? github.getOctokit(botToken)
+      : null
+    const translationContext = octokit
+      ? await fetchReviewTranslationContext(pullNumber, commentId, octokit)
+      : getTranslationContext(github.context)
     if (translationContext === null) {
       core.warning(
         'Can not resolve the translation context from the event payload.'
@@ -237,12 +287,10 @@ export async function run(): Promise<void> {
       commentTarget
     } = translationContext
 
-    const {token: botToken, login} = getBotCredentials()
     let botLoginName = login
 
-    let octokit: Octokit | null = null
     if (botLoginName === '') {
-      octokit = github.getOctokit(botToken)
+      octokit = octokit ?? github.getOctokit(botToken)
       const botInfo = await octokit.request('GET /user')
       botLoginName = botInfo.data.login
     }
@@ -251,6 +299,28 @@ export async function run(): Promise<void> {
         `The comment user is bot ${botLoginName} himself, ignore return.`
       )
       return
+    }
+
+    const reviewMarker = byCommentId
+      ? `<!-- issues-translate-action:review-comment:${commentId} -->\n`
+      : ''
+    if (octokit && byCommentId) {
+      const comments = octokit.paginate.iterator(
+        octokit.rest.pulls.listReviewComments,
+        {...github.context.repo, pull_number: pullNumber, per_page: 100}
+      )
+      for await (const {data} of comments) {
+        if (
+          data.some(
+            comment =>
+              comment.user.login.toLowerCase() === botLoginName.toLowerCase() &&
+              comment.body.startsWith(reviewMarker)
+          )
+        ) {
+          core.info('The review comment already has a translation.')
+          return
+        }
+      }
     }
 
     let botNote = DEFAULT_BOT_NOTE
@@ -384,7 +454,11 @@ export async function run(): Promise<void> {
     }
 
     if (safeTranslateCommentBody !== null) {
-      await createComment(commentTarget, safeTranslateCommentBody, octokit)
+      await createComment(
+        commentTarget,
+        reviewMarker + safeTranslateCommentBody,
+        octokit
+      )
     }
 
     core.setOutput('complete time', new Date().toTimeString())
@@ -574,9 +648,7 @@ async function createComment(
       }
     )
     core.info(
-      `complete to push translate review comment: ${body} in ${
-        commentTarget.htmlUrl ?? ''
-      } `
+      `Posted translated review comment to ${commentTarget.htmlUrl ?? ''}.`
     )
     return
   }
