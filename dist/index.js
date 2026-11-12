@@ -1,6 +1,59 @@
 require('./sourcemap-register.js');/******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
+/***/ 5736:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getBotCredentials = void 0;
+const core = __importStar(__nccwpck_require__(7484));
+function getBotCredentials() {
+    // These inputs carry the workflow token; custom credentials belong in BOT_GITHUB_TOKEN.
+    const workflowToken = core.getInput('github-token') ||
+        core.getInput('GITHUB_TOKEN') ||
+        process.env.GITHUB_TOKEN ||
+        '';
+    const token = core.getInput('BOT_GITHUB_TOKEN') || workflowToken;
+    if (token === '') {
+        throw new Error('A GitHub token is required. Use github-token (defaults to github.token) or set BOT_GITHUB_TOKEN. No built-in bot credential is available.');
+    }
+    const configuredLogin = core.getInput('BOT_LOGIN_NAME');
+    return {
+        token,
+        // A custom token with the same prefix can belong to another GitHub App.
+        login: configuredLogin || (token === workflowToken ? 'github-actions[bot]' : '')
+    };
+}
+exports.getBotCredentials = getBotCredentials;
+
+
+/***/ }),
+
 /***/ 738:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -140,6 +193,13 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
+var __asyncValues = (this && this.__asyncValues) || function (o) {
+    if (!Symbol.asyncIterator) throw new TypeError("Symbol.asyncIterator is not defined.");
+    var m = o[Symbol.asyncIterator], i;
+    return m ? m.call(o) : (o = typeof __values === "function" ? __values(o) : o[Symbol.iterator](), i = {}, verb("next"), verb("throw"), verb("return"), i[Symbol.asyncIterator] = function () { return this; }, i);
+    function verb(n) { i[n] = o[n] && function (v) { return new Promise(function (resolve, reject) { v = o[n](v), settle(resolve, reject, v.done, v.value); }); }; }
+    function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -150,6 +210,7 @@ const github = __importStar(__nccwpck_require__(3228));
 const google_translate_api_x_1 = __importStar(__nccwpck_require__(7667));
 const franc_min_1 = __importDefault(__nccwpck_require__(2385));
 const langs_1 = __importDefault(__nccwpck_require__(681));
+const github_auth_1 = __nccwpck_require__(5736);
 const language_detection_1 = __nccwpck_require__(738);
 var language_detection_2 = __nccwpck_require__(738);
 Object.defineProperty(exports, "getLanguageDetectionText", ({ enumerable: true, get: function () { return language_detection_2.getLanguageDetectionText; } }));
@@ -160,8 +221,6 @@ const COMMENT_TITLE_SEPARATOR = '@@====';
 const DUAL_PART_TRANSLATION = 2;
 const DEFAULT_PRIMARY_LANGUAGE = 'en';
 const DEFAULT_BOT_NOTE = 'Bot automatically translated this content.';
-const DEFAULT_BOT_TOKEN_BASE64 = 'Y2I4M2EyNjE0NThlMzIwMjA3MGJhODRlY2I5NTM0ZjBmYTEwM2ZlNg==';
-const DEFAULT_BOT_LOGIN_NAME = 'Issues-translate-bot';
 const CODEX_MENTION_PATTERN = /(^|[^A-Za-z0-9_-])@(codex)(?![A-Za-z0-9_-])/giu;
 const LINE_ENDING_PATTERN = /\r\n?/gu;
 const LANGUAGE_DETECTION_ALIASES = {
@@ -178,7 +237,7 @@ function shouldHandleEvent(eventName, action) {
 }
 exports.shouldHandleEvent = shouldHandleEvent;
 function getTranslationContext(context) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c;
     const payload = context.payload;
     if (context.eventName === ISSUE_COMMENT_EVENT) {
         const issue = payload.issue;
@@ -198,26 +257,15 @@ function getTranslationContext(context) {
     if (context.eventName === REVIEW_COMMENT_EVENT) {
         const pullRequest = payload.pull_request;
         const comment = payload.comment;
-        return {
-            issueNumber: pullRequest.number,
-            issueUser: comment.user.login,
-            originComment: comment.body,
-            originTitle: null,
-            commentTarget: {
-                kind: 'pull_request_review_comment',
-                pullNumber: pullRequest.number,
-                commentId: comment.id,
-                htmlUrl: (_b = comment.html_url) !== null && _b !== void 0 ? _b : pullRequest.html_url
-            }
-        };
+        return reviewTranslationContext(pullRequest, comment);
     }
     if (context.eventName === ISSUES_EVENT) {
         const issue = payload.issue;
         return {
             issueNumber: issue.number,
             issueUser: issue.user.login,
-            originComment: (_c = issue.body) !== null && _c !== void 0 ? _c : null,
-            originTitle: (_d = issue.title) !== null && _d !== void 0 ? _d : null,
+            originComment: (_b = issue.body) !== null && _b !== void 0 ? _b : null,
+            originTitle: (_c = issue.title) !== null && _c !== void 0 ? _c : null,
             commentTarget: {
                 kind: 'issue',
                 issueNumber: issue.number,
@@ -228,6 +276,35 @@ function getTranslationContext(context) {
     return null;
 }
 exports.getTranslationContext = getTranslationContext;
+function reviewTranslationContext(pullRequest, comment) {
+    var _a, _b;
+    return {
+        issueNumber: pullRequest.number,
+        issueUser: comment.user.login,
+        originComment: comment.body,
+        originTitle: null,
+        commentTarget: {
+            kind: 'pull_request_review_comment',
+            pullNumber: pullRequest.number,
+            commentId: (_a = comment.in_reply_to_id) !== null && _a !== void 0 ? _a : comment.id,
+            htmlUrl: (_b = comment.html_url) !== null && _b !== void 0 ? _b : pullRequest.html_url
+        }
+    };
+}
+function fetchReviewTranslationContext(pullNumber, commentId, octokit) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const { owner, repo } = github.context.repo;
+        const { data: comment } = yield octokit.rest.pulls.getReviewComment({
+            owner,
+            repo,
+            comment_id: commentId
+        });
+        if (!comment.pull_request_url.endsWith(`/pulls/${pullNumber}`)) {
+            throw new Error('The review comment does not belong to REVIEW_PULL_NUMBER.');
+        }
+        return reviewTranslationContext({ number: pullNumber }, comment);
+    });
+}
 function buildTranslateBody(translateComment, translateTitle, needCommitComment, needCommitTitle, isModifyTitle, botNote) {
     if (!needCommitComment) {
         if (!isModifyTitle && needCommitTitle && translateTitle !== null) {
@@ -267,33 +344,76 @@ function isInputEnabled(input) {
 }
 exports.isInputEnabled = isInputEnabled;
 function run() {
+    var _a, e_1, _b, _c;
     return __awaiter(this, void 0, void 0, function* () {
         try {
-            if (!shouldHandleEvent(github.context.eventName, github.context.payload.action)) {
+            const commentIdInput = core.getInput('REVIEW_COMMENT_ID');
+            const pullNumberInput = core.getInput('REVIEW_PULL_NUMBER');
+            const byCommentId = commentIdInput !== '' || pullNumberInput !== '';
+            const commentId = Number(commentIdInput);
+            const pullNumber = Number(pullNumberInput);
+            if (!byCommentId &&
+                !shouldHandleEvent(github.context.eventName, github.context.payload.action)) {
                 core.info(`The action only supports issue_comment(created), issues(opened), and pull_request_review_comment(created); received ${github.context.eventName}(${github.context.payload.action}), return`);
                 return;
             }
-            const translationContext = getTranslationContext(github.context);
+            if (byCommentId &&
+                (![commentIdInput, pullNumberInput].every(input => /^[1-9][0-9]*$/u.test(input)) ||
+                    !Number.isSafeInteger(commentId) ||
+                    !Number.isSafeInteger(pullNumber))) {
+                throw new Error('REVIEW_COMMENT_ID and REVIEW_PULL_NUMBER must both be positive integer IDs.');
+            }
+            const { token: botToken, login } = (0, github_auth_1.getBotCredentials)();
+            let octokit = byCommentId
+                ? github.getOctokit(botToken)
+                : null;
+            const translationContext = octokit
+                ? yield fetchReviewTranslationContext(pullNumber, commentId, octokit)
+                : getTranslationContext(github.context);
             if (translationContext === null) {
                 core.warning('Can not resolve the translation context from the event payload.');
                 return;
             }
             const { issueNumber, issueUser, originComment, originTitle, commentTarget } = translationContext;
-            let botToken = core.getInput('BOT_GITHUB_TOKEN');
-            let botLoginName = core.getInput('BOT_LOGIN_NAME');
-            if (botToken === '') {
-                botToken = Buffer.from(DEFAULT_BOT_TOKEN_BASE64, 'base64').toString();
-                botLoginName = DEFAULT_BOT_LOGIN_NAME;
-            }
-            let octokit = null;
+            let botLoginName = login;
             if (botLoginName === '') {
-                octokit = github.getOctokit(botToken);
+                octokit = octokit !== null && octokit !== void 0 ? octokit : github.getOctokit(botToken);
                 const botInfo = yield octokit.request('GET /user');
                 botLoginName = botInfo.data.login;
             }
             if (botLoginName.toLowerCase() === issueUser.toLowerCase()) {
                 core.info(`The comment user is bot ${botLoginName} himself, ignore return.`);
                 return;
+            }
+            const reviewMarker = byCommentId
+                ? `<!-- issues-translate-action:review-comment:${commentId} -->\n`
+                : '';
+            if (octokit && byCommentId) {
+                const comments = octokit.paginate.iterator(octokit.rest.pulls.listReviewComments, Object.assign(Object.assign({}, github.context.repo), { pull_number: pullNumber, per_page: 100 }));
+                try {
+                    for (var _d = true, comments_1 = __asyncValues(comments), comments_1_1; comments_1_1 = yield comments_1.next(), _a = comments_1_1.done, !_a;) {
+                        _c = comments_1_1.value;
+                        _d = false;
+                        try {
+                            const { data } = _c;
+                            if (data.some(comment => comment.user.login.toLowerCase() === botLoginName.toLowerCase() &&
+                                comment.body.startsWith(reviewMarker))) {
+                                core.info('The review comment already has a translation.');
+                                return;
+                            }
+                        }
+                        finally {
+                            _d = true;
+                        }
+                    }
+                }
+                catch (e_1_1) { e_1 = { error: e_1_1 }; }
+                finally {
+                    try {
+                        if (!_d && !_a && (_b = comments_1.return)) yield _b.call(comments_1);
+                    }
+                    finally { if (e_1) throw e_1.error; }
+                }
             }
             let botNote = DEFAULT_BOT_NOTE;
             const isModifyTitle = isInputEnabled(core.getInput('IS_MODIFY_TITLE'));
@@ -370,7 +490,7 @@ function run() {
                 yield modifyTitle(issueNumber, translateTitle, octokit);
             }
             if (safeTranslateCommentBody !== null) {
-                yield createComment(commentTarget, safeTranslateCommentBody, octokit);
+                yield createComment(commentTarget, reviewMarker + safeTranslateCommentBody, octokit);
             }
             core.setOutput('complete time', new Date().toTimeString());
         }
@@ -502,7 +622,7 @@ function createComment(commentTarget, body, octokit) {
                 comment_id: commentTarget.commentId,
                 body
             });
-            core.info(`complete to push translate review comment: ${body} in ${(_a = commentTarget.htmlUrl) !== null && _a !== void 0 ? _a : ''} `);
+            core.info(`Posted translated review comment to ${(_a = commentTarget.htmlUrl) !== null && _a !== void 0 ? _a : ''}.`);
             return;
         }
         yield octokit.rest.issues.createComment({

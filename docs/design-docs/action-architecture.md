@@ -7,10 +7,12 @@
 
 ## 事件到翻译的流程
 
-1. `run()` 仅接受 `issue_comment(created)`、`issues(opened)` 和
-   `pull_request_review_comment(created)`。
+1. `run()` 接受 `issue_comment(created)`、`issues(opened)` 和
+   `pull_request_review_comment(created)`。显式传入 `REVIEW_COMMENT_ID` 和
+   `REVIEW_PULL_NUMBER` 时，从当前仓库读取评论并核对所属 PR，适用于有写权限的发布 workflow。
+   该入口按原评论 ID 查找机器人已发布的译文，重跑时跳过已翻译的评论。
 2. `getTranslationContext()` 从事件 payload 取得 issue/PR 编号、作者、评论、可选标题和
-   评论目标。review comment 使用原 thread 回复；其他情况创建 issue 评论。
+   评论目标。review comment 使用原线程的顶层评论 ID 回复；其他情况创建 issue 评论。
 3. `getTranslationTarget()` 先调用 `getLanguageDetectionText()` 生成检测副本：保留 Markdown
    可见文字，忽略 URL、代码、链接目标和 commit SHA 等技术噪声。若 Latin 技术词可能压过
    有充分证据的中日韩文字，Unicode script 规则优先返回对应检测代码；Han-only 的中日歧义
@@ -20,7 +22,11 @@
    宏语言补充别名，避免直接比较 `en` 与 `eng`、`zh-CN` 与 `cmn`。
 5. 标题和评论分别选择目标语言；目标相同时使用内部 `@@====` 分隔符合并为一次批量
    翻译，目标不同时分别翻译。所有翻译成功后才执行 GitHub 写入。
-6. 处理内容前先查询或比对机器人登录名；机器人自身产生的事件在语言识别前跳过。翻译结果
+6. [`src/github-auth.ts`](../../src/github-auth.ts) 在处理内容前解析凭据：自定义
+   `BOT_GITHUB_TOKEN` 优先，否则使用默认 `${{ github.token }}` 的 `github-token`，
+   再兼容 `GITHUB_TOKEN` 输入或环境变量；无 token 立即失败。默认工作流 token 使用
+   `github-actions[bot]`，自定义 PAT 通过 `GET /user` 查询身份，自定义 GitHub App
+   必须显式设置 `BOT_LOGIN_NAME`。机器人自身产生的事件在语言识别前跳过。翻译结果
    用于更新标题或生成机器人回复，仅 NFC 或换行编码不同的译文视为无变化，不会写回 GitHub。
 7. 生成评论后、写回 GitHub 前会在独立的 `@codex` 的 `@` 后插入零宽空格。页面仍显示
    原有文字，但自动译文不会成为 Codex 指令；该处理覆盖 issue 评论和 review thread 回复。

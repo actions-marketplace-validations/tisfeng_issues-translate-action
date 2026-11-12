@@ -109,6 +109,119 @@ describe('issues translate action helpers', () => {
     expect(shouldHandleEvent('pull_request', 'opened')).toBe(false)
   })
 
+  describe('explicit review comment translation', () => {
+    function setUpReviewComment(
+      inputs: Record<string, string> = {},
+      pullNumber = 7
+    ) {
+      Object.assign(mockedGithub.context, {
+        eventName: 'workflow_run',
+        payload: {action: 'completed'},
+        repo: {owner: 'owner', repo: 'repo'}
+      })
+      const inputValues: Record<string, string> = {
+        REVIEW_COMMENT_ID: '99',
+        REVIEW_PULL_NUMBER: '7',
+        'github-token': 'test-token',
+        ...inputs
+      }
+      mockedCore.getInput.mockImplementation(name => inputValues[name] ?? '')
+      const getReviewComment = jest.fn().mockResolvedValue({
+        data: {
+          id: 99,
+          in_reply_to_id: 42,
+          body: '请检查这个改动。',
+          user: {login: 'contributor'},
+          pull_request_url: `https://api.github.com/repos/owner/repo/pulls/${pullNumber}`
+        }
+      })
+      const listReviewComments = jest.fn()
+      const iterator = jest.fn().mockReturnValue([{data: []}])
+      const request = jest.fn().mockResolvedValue({})
+      mockedGithub.getOctokit.mockReturnValue(({
+        request,
+        rest: {pulls: {getReviewComment, listReviewComments}},
+        paginate: {iterator}
+      } as unknown) as ReturnType<typeof github.getOctokit>)
+      mockedTranslate.mockResolvedValue({text: 'Please check this change.'})
+      return {getReviewComment, iterator, request}
+    }
+
+    test('fetches the original reply and posts the translation under the thread root', async () => {
+      const {getReviewComment, request} = setUpReviewComment()
+
+      await run()
+
+      expect(getReviewComment).toHaveBeenCalledWith({
+        owner: 'owner',
+        repo: 'repo',
+        comment_id: 99
+      })
+      expect(mockedTranslate).toHaveBeenCalledWith(
+        '请检查这个改动。',
+        expect.objectContaining({to: 'en'})
+      )
+      expect(request).toHaveBeenCalledWith(
+        'POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies',
+        {
+          owner: 'owner',
+          repo: 'repo',
+          pull_number: 7,
+          comment_id: 42,
+          body: expect.stringMatching(
+            /^<!-- issues-translate-action:review-comment:99 -->[\s\S]*Please check this change\./u
+          )
+        }
+      )
+      expect(mockedCore.setFailed).not.toHaveBeenCalled()
+    })
+
+    test('skips a translation that the bot posted on a previous run', async () => {
+      const {iterator, request} = setUpReviewComment()
+      iterator.mockReturnValue([
+        {data: []},
+        {
+          data: [
+            {
+              body:
+                '<!-- issues-translate-action:review-comment:99 -->\nTranslated.',
+              user: {login: 'github-actions[bot]'}
+            }
+          ]
+        }
+      ])
+
+      await run()
+
+      expect(mockedTranslate).not.toHaveBeenCalled()
+      expect(request).not.toHaveBeenCalled()
+      expect(mockedCore.setFailed).not.toHaveBeenCalled()
+    })
+
+    test('rejects an ID pair that names the wrong pull request', async () => {
+      const {request} = setUpReviewComment({}, 8)
+
+      await run()
+
+      expect(mockedCore.setFailed).toHaveBeenCalledWith(
+        expect.stringContaining('does not belong to REVIEW_PULL_NUMBER')
+      )
+      expect(mockedTranslate).not.toHaveBeenCalled()
+      expect(request).not.toHaveBeenCalled()
+    })
+
+    test('rejects a missing pull number before calling GitHub', async () => {
+      setUpReviewComment({REVIEW_PULL_NUMBER: ''})
+
+      await run()
+
+      expect(mockedCore.setFailed).toHaveBeenCalledWith(
+        expect.stringContaining('must both be positive integer IDs')
+      )
+      expect(mockedGithub.getOctokit).not.toHaveBeenCalled()
+    })
+  })
+
   test('extracts review comment translation context', () => {
     const context = ({
       eventName: 'pull_request_review_comment',
@@ -669,7 +782,7 @@ const ignoredCode = '不要用于识别'
         comment: {
           id: 99,
           body: 'Please review this change.',
-          user: {login: 'Issues-translate-bot'}
+          user: {login: 'github-actions[bot]'}
         }
       }
     ],
@@ -681,7 +794,7 @@ const ignoredCode = '不要用于识别'
         comment: {
           id: 99,
           body: 'Please review this change.',
-          user: {login: 'Issues-translate-bot'}
+          user: {login: 'github-actions[bot]'}
         }
       }
     ]
@@ -689,6 +802,7 @@ const ignoredCode = '不要用于识别'
     'skips the default bot %s comment before language detection or GitHub writes',
     async (eventName, payload) => {
       mockedCore.getInput.mockImplementation((name: string) => {
+        if (name === 'github-token') return 'workflow-token'
         if (name === 'SECONDARY_LANGUAGE') {
           return 'zh-CN'
         }
@@ -860,5 +974,85 @@ const ignoredCode = '不要用于识别'
     expect(body).not.toContain('@codex review')
     expect(body).not.toContain('Translation of @codex content.')
     expect(mockedCore.setFailed).not.toHaveBeenCalled()
+  })
+
+  test('fails without a token before detection, translation, or GitHub access', async () => {
+    Object.assign(mockedGithub.context, {
+      eventName: 'issues',
+      payload: {
+        action: 'opened',
+        issue: {number: 1, body: '请检查这个问题。', user: {login: 'author'}}
+      }
+    })
+    const originalToken = process.env.GITHUB_TOKEN
+    delete process.env.GITHUB_TOKEN
+    try {
+      await run()
+      expect(mockedCore.setFailed).toHaveBeenCalledWith(
+        expect.stringContaining('A GitHub token is required')
+      )
+      expect(mockedFranc).not.toHaveBeenCalled()
+      expect(mockedTranslate).not.toHaveBeenCalled()
+      expect(mockedGithub.getOctokit).not.toHaveBeenCalled()
+    } finally {
+      if (originalToken !== undefined) process.env.GITHUB_TOKEN = originalToken
+    }
+  })
+
+  test('skips workflow bot comments before translation or API access', async () => {
+    mockedCore.getInput.mockImplementation(name =>
+      name === 'github-token' ? 'workflow-token' : ''
+    )
+    Object.assign(mockedGithub.context, {
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        issue: {number: 1},
+        comment: {id: 2, body: '译文', user: {login: 'GitHub-Actions[bot]'}}
+      }
+    })
+    await run()
+    expect(mockedCore.setFailed).not.toHaveBeenCalled()
+    expect(mockedFranc).not.toHaveBeenCalled()
+    expect(mockedTranslate).not.toHaveBeenCalled()
+    expect(mockedGithub.getOctokit).not.toHaveBeenCalled()
+  })
+
+  test('uses the workflow token to post without looking up a user', async () => {
+    const createComment = jest.fn()
+    const request = jest
+      .fn()
+      .mockRejectedValue(new Error('GET /user forbidden'))
+    mockedGithub.getOctokit.mockReturnValue(({
+      request,
+      rest: {issues: {createComment}}
+    } as unknown) as ReturnType<typeof github.getOctokit>)
+    mockedCore.getInput.mockImplementation(name => {
+      const inputs: Record<string, string> = {
+        'github-token': 'workflow-token',
+        PRIMARY_LANGUAGE: 'en'
+      }
+      return inputs[name] ?? ''
+    })
+    Object.assign(mockedGithub.context, {
+      eventName: 'issue_comment',
+      repo: {owner: 'owner', repo: 'repo'},
+      payload: {
+        action: 'created',
+        issue: {number: 1},
+        comment: {id: 2, body: '请检查这个问题。', user: {login: 'author'}}
+      }
+    })
+    mockedTranslate.mockResolvedValue({text: 'Please check this issue.'})
+    await run()
+    expect(mockedCore.setFailed).not.toHaveBeenCalled()
+    expect(mockedGithub.getOctokit).toHaveBeenCalledWith('workflow-token')
+    expect(request).not.toHaveBeenCalled()
+    expect(createComment).toHaveBeenCalledWith({
+      owner: 'owner',
+      repo: 'repo',
+      issue_number: 1,
+      body: expect.stringContaining('Please check this issue.')
+    })
   })
 })
